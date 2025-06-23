@@ -1,11 +1,14 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const https = require('https');
 const { execSync } = require('child_process');
 const path = require('path');
+
+puppeteer.use(StealthPlugin());
 
 const app = express();
 app.use(bodyParser.json());
@@ -21,7 +24,7 @@ function cleanUpFile(filePath) {
 // --------- Spotify Canvas Extraction with Puppeteer ---------
 async function extractSpotifyCanvas(trackUrl) {
   const browser = await puppeteer.launch({
-    executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'), // ✅ Corrected path
+    executablePath: '/opt/chrome/chrome-linux/chrome',
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
@@ -29,9 +32,9 @@ async function extractSpotifyCanvas(trackUrl) {
   const page = await browser.newPage();
   await page.goto(`https://www.canvasdownloader.com/canvas?link=${trackUrl}`, {
     waitUntil: 'networkidle2',
+    timeout: 30000,
   });
 
-  // Wait and extract the download link from button
   await page.waitForSelector('a[download]', { timeout: 10000 }).catch(() => null);
   const downloadLink = await page.$eval('a[download]', el => el.href).catch(() => null);
 
@@ -84,7 +87,7 @@ function downloadYouTubeVideo(videoId, callback) {
 
 function convertToGif(inputPath, outputPath, callback) {
   ffmpeg(inputPath)
-    .setStartTime(30) // 30 seconds fixed offset
+    .setStartTime(30)
     .duration(5)
     .outputOptions('-vf', 'fps=10,scale=320:-1:flags=lanczos')
     .save(outputPath)
@@ -100,13 +103,11 @@ app.post('/extract-canvas', async (req, res) => {
   }
 
   try {
-    // 🟢 Attempt canvas extraction
     const canvasUrl = await extractSpotifyCanvas(trackUrl);
     return res.json({ type: 'canvas', url: canvasUrl });
   } catch (err) {
     console.error('Canvas extraction failed, falling back to YouTube:', err.message);
 
-    // 🔁 Fallback to YouTube
     const fallbackQuery = `official music video ${trackUrl.split('/').pop()}`;
     searchYouTube(fallbackQuery, (ytErr, videoId) => {
       if (ytErr) {
