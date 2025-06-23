@@ -24,7 +24,7 @@ function cleanUpFile(filePath) {
 // --------- Spotify Canvas Extraction with Puppeteer ---------
 async function extractSpotifyCanvas(trackUrl) {
   const browser = await puppeteer.launch({
-    executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'), // ✅ LOCAL CHROMIUM
+    executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'),
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
@@ -35,10 +35,22 @@ async function extractSpotifyCanvas(trackUrl) {
     timeout: 30000,
   });
 
+  const shot1 = path.join(__dirname, 'debug_step1_loaded.png');
+  await page.screenshot({ path: shot1 });
+
   await page.waitForSelector('a[download]', { timeout: 10000 }).catch(() => null);
+  const shot2 = path.join(__dirname, 'debug_step2_after_wait.png');
+  await page.screenshot({ path: shot2 });
+
   const downloadLink = await page.$eval('a[download]', el => el.href).catch(() => null);
 
   await browser.close();
+
+  // Delete screenshots after 1 minute
+  setTimeout(() => {
+    cleanUpFile(shot1);
+    cleanUpFile(shot2);
+  }, 60000);
 
   if (!downloadLink) {
     throw new Error('Canvas download link not found');
@@ -103,13 +115,11 @@ app.post('/extract-canvas', async (req, res) => {
   }
 
   try {
-    // 🟢 Try Canvas
     const canvasUrl = await extractSpotifyCanvas(trackUrl);
     return res.json({ type: 'canvas', url: canvasUrl });
   } catch (err) {
     console.error('Canvas extraction failed, falling back to YouTube:', err.message);
 
-    // 🔁 Fallback to YouTube
     const fallbackQuery = `official music video ${trackUrl.split('/').pop()}`;
     searchYouTube(fallbackQuery, (ytErr, videoId) => {
       if (ytErr) {
@@ -136,6 +146,20 @@ app.post('/extract-canvas', async (req, res) => {
     });
   }
 });
+
+// --------- Debug Screenshot Route ---------
+app.get('/debug-canvas', (req, res) => {
+  const files = ['debug_step1_loaded.png', 'debug_step2_after_wait.png'].filter(f => fs.existsSync(f));
+  if (files.length === 0) return res.status(404).send('No debug screenshots found.');
+
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`
+    <h2>Debug Screenshots</h2>
+    ${files.map(f => `<div><p>${f}</p><img src="/${f}" width="300"/></div>`).join('')}
+  `);
+});
+
+app.use(express.static(__dirname)); // to serve PNGs from disk
 
 // --------- Start Server ---------
 const PORT = process.env.PORT || 10000;
