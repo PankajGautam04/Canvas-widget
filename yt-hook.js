@@ -1,48 +1,60 @@
+// yt-hook.js
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
-const https = require('https');
+const ffmpeg = require('fluent-ffmpeg');
 
-function getYoutubeGif(track, artist) {
-  return new Promise((resolve, reject) => {
+module.exports = function(req, res) {
+  try {
+    const { trackUrl } = req.body;
+    const query = encodeURIComponent(trackUrl);
     const apiKey = process.env.YOUTUBE_API_KEY;
-    const query = encodeURIComponent(`${track} ${artist} official music video`);
-    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${query}&key=${apiKey}&type=video&maxResults=1`;
+    const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${query}%20official%20music%20video&key=${apiKey}&type=video&maxResults=1`;
 
-    console.log("Querying YouTube API with URL:", url);
+    console.log('Querying YouTube API with URL:', apiUrl);
 
-    https.get(url, res => {
+    require('https').get(apiUrl, (response) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
+
+      response.on('data', chunk => data += chunk);
+
+      response.on('end', () => {
         try {
-          console.log("YouTube API response:", data);
           const json = JSON.parse(data);
           const videoId = json.items?.[0]?.id?.videoId;
-          if (!videoId) {
-            console.warn("No videoId found in API response");
-            return resolve(null);
-          }
+
+          if (!videoId) return res.status(404).json({ error: 'No video found' });
 
           const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-          const outName = `yt_${Date.now()}`;
-          const mp4Path = path.join(__dirname, `${outName}.mp4`);
-          const gifPath = path.join(__dirname, `${outName}.gif`);
+          const outputPath = path.join(__dirname, `yt_${Date.now()}.mp4`);
 
-          execSync(`python3 -m yt_dlp -f mp4 -o "${mp4Path}" "${videoUrl}"`);
-          execSync(`ffmpeg -ss 00:00:30 -i "${mp4Path}" -t 00:00:08 -vf "scale=300:-1,fps=15" -loop 0 "${gifPath}"`);
-          fs.unlinkSync(mp4Path);
-          resolve(gifPath);
+          console.log('Downloading:', videoUrl);
+
+          execSync(`python3 -m yt_dlp -f mp4 -o "${outputPath}" "${videoUrl}"`, { stdio: 'inherit' });
+
+          const gifPath = outputPath.replace('.mp4', '.gif');
+          ffmpeg(outputPath)
+            .setStartTime('00:00:30')
+            .setDuration(5)
+            .outputOptions('-vf', 'fps=10,scale=360:-1:flags=lanczos')
+            .loop(0)
+            .save(gifPath)
+            .on('end', () => {
+              fs.unlinkSync(outputPath);
+              return res.json({ gifUrl: `/gifs/${path.basename(gifPath)}` });
+            });
+
         } catch (err) {
-          console.error("Error parsing response or downloading/processing video:", err);
-          resolve(null);
+          console.error('Error parsing response or downloading/processing video:', err);
+          res.status(500).json({ error: 'Internal server error' });
         }
       });
     }).on('error', err => {
-      console.error("YouTube API request failed:", err);
-      reject(err);
+      console.error('YouTube API request error:', err);
+      res.status(500).json({ error: 'Failed to fetch from YouTube API' });
     });
-  });
-}
-
-module.exports = { getYoutubeGif };
+  } catch (err) {
+    console.error('ytHook internal error:', err);
+    res.status(500).json({ error: 'ytHook execution failed' });
+  }
+};
