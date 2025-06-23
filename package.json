@@ -16,5 +16,14 @@
   "engines": {
     "node": "^22.0.0"
   },
+  "keywords": [
+    "spotify",
+    "canvas",
+    "gif",
+    "puppeteer",
+    "backend"
+  ],
+  "author": "Pankaj Gautam",
+  "license": "MIT",
   "private": true
 }
