@@ -1,79 +1,52 @@
+// server.js
 const express = require('express');
 const puppeteer = require('puppeteer-core');
+const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
+const ytHook = require('./yt-hook');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(express.json());
+app.use(bodyParser.json());
 
 app.post('/extract-canvas', async (req, res) => {
   const { trackUrl } = req.body;
-  if (!trackUrl || !trackUrl.startsWith('https://open.spotify.com/track/')) {
+  if (!trackUrl || !trackUrl.includes('spotify.com/track/')) {
     return res.status(400).json({ error: 'Invalid Spotify track URL' });
   }
 
-  let browser;
   try {
-    browser = await puppeteer.launch({
-      executablePath: '/usr/bin/chromium',
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-sync',
-        '--disable-default-apps',
-        '--mute-audio',
-        '--no-first-run',
-        '--no-zygote'
-      ]
+    const browser = await puppeteer.launch({
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true
     });
 
     const page = await browser.newPage();
+    const encoded = encodeURIComponent(trackUrl);
+    const targetUrl = `https://www.canvasdownloader.com/canvas?link=${encoded}`;
 
-    await page.setUserAgent(
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'
-    );
-    await page.setViewport({ width: 375, height: 667, isMobile: true });
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if ([
-        'image',
-        'stylesheet',
-        'font',
-        'media',
-        'other',
-        'script'
-      ].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
+    const downloadLink = await page.evaluate(() => {
+      const a = document.querySelector('a[href*="/downloads/"]');
+      return a ? a.href : null;
     });
-
-    await page.goto(`https://www.canvasdownloader.com/canvas?link=${trackUrl}`, {
-      waitUntil: 'domcontentloaded'
-    });
-
-    await page.waitForSelector('video', { timeout: 10000 });
-    const videoSrc = await page.$eval('video', el => el.src);
 
     await browser.close();
-    res.json({ videoUrl: videoSrc });
+
+    if (!downloadLink) {
+      return res.status(500).json({ error: 'Canvas not found' });
+    }
+
+    res.json({ gifUrl: downloadLink });
   } catch (err) {
-    if (browser) await browser.close();
-    console.error(err);
-    res.status(500).json({ error: 'Failed to extract canvas' });
+    console.error('Canvas extraction failed, falling back to YouTube:', err.message);
+    ytHook(req, res); // fallback to YouTube video hook
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
