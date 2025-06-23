@@ -1,12 +1,8 @@
-// File: server.js
-
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
-const ffmpeg = require('fluent-ffmpeg');
 
 puppeteer.use(StealthPlugin());
 
@@ -24,12 +20,14 @@ async function extractCanvasMp4(trackUrl) {
   const browser = await puppeteer.launch({
     executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'),
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    userDataDir: path.join(__dirname, 'puppeteer_profile') // ✅ persistent login
   });
 
   const page = await browser.newPage();
   const canvasUrls = [];
 
+  // Watch for MP4 canvas links
   page.on('request', req => {
     const url = req.url();
     if (url.includes('.mp4') && url.includes('canvas')) {
@@ -37,27 +35,36 @@ async function extractCanvasMp4(trackUrl) {
     }
   });
 
-  // 🟢 STEP 1: Login
+  // Go to login page if not already logged in
   await page.goto('https://accounts.spotify.com/en/login', { waitUntil: 'networkidle2' });
 
-  await page.waitForSelector('input#login-username', { timeout: 10000 });
-  await page.type('input#login-username', SPOTIFY_EMAIL);
-  await page.click('button[type="submit"]'); // Continue
+  // Check if already logged in
+  const isLoggedIn = await page.evaluate(() => {
+    return document.body.innerText.includes("What's on your mind?");
+  });
 
-  await page.waitForSelector('button[data-testid="login-with-password"]', { timeout: 10000 });
-  await page.click('button[data-testid="login-with-password"]'); // Switch to password login
+  if (!isLoggedIn) {
+    // Login flow
+    await page.waitForSelector('#login-username');
+    await page.type('#login-username', SPOTIFY_EMAIL);
+    await page.click('#login-button');
 
-  await page.waitForSelector('input#login-password', { timeout: 10000 });
-  await page.type('input#login-password', SPOTIFY_PASSWORD);
+    // Wait and click "Log in with a password"
+    await page.waitForSelector('button[data-testid="login-with-password"]', { timeout: 10000 });
+    await page.click('button[data-testid="login-with-password"]');
 
-  await Promise.all([
-    page.click('button[type="submit"]'),
-    page.waitForNavigation({ waitUntil: 'networkidle2' }),
-  ]);
+    await page.waitForSelector('#login-password', { timeout: 10000 });
+    await page.type('#login-password', SPOTIFY_PASSWORD);
 
-  // 🟢 STEP 2: Open track and wait for canvas request
+    await Promise.all([
+      page.click('#login-button'),
+      page.waitForNavigation({ waitUntil: 'networkidle2' })
+    ]);
+  }
+
+  // Go to the track URL and wait for canvas request
   await page.goto(trackUrl, { waitUntil: 'networkidle2' });
-  await page.waitForTimeout(8000); // Give time for canvas to load
+  await page.waitForTimeout(8000);
 
   await browser.close();
 
@@ -65,7 +72,6 @@ async function extractCanvasMp4(trackUrl) {
   return canvasUrls[0];
 }
 
-// --------- API Endpoint ---------
 app.post('/extract-canvas', async (req, res) => {
   const { trackUrl } = req.body;
   if (!trackUrl || !trackUrl.includes('open.spotify.com/track')) {
@@ -81,8 +87,7 @@ app.post('/extract-canvas', async (req, res) => {
   }
 });
 
-// --------- Start Server ---------
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
