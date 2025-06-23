@@ -24,7 +24,7 @@ function cleanUpFile(filePath) {
 // --------- Spotify Canvas Extraction with Puppeteer ---------
 async function extractSpotifyCanvas(trackUrl) {
   const browser = await puppeteer.launch({
-    executablePath: '/opt/chrome/chrome-linux/chrome',
+    executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'), // ✅ LOCAL CHROMIUM
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
@@ -103,11 +103,13 @@ app.post('/extract-canvas', async (req, res) => {
   }
 
   try {
+    // 🟢 Try Canvas
     const canvasUrl = await extractSpotifyCanvas(trackUrl);
     return res.json({ type: 'canvas', url: canvasUrl });
   } catch (err) {
     console.error('Canvas extraction failed, falling back to YouTube:', err.message);
 
+    // 🔁 Fallback to YouTube
     const fallbackQuery = `official music video ${trackUrl.split('/').pop()}`;
     searchYouTube(fallbackQuery, (ytErr, videoId) => {
       if (ytErr) {
