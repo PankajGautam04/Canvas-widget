@@ -1,60 +1,64 @@
-// yt-hook.js
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const ffmpeg = require('fluent-ffmpeg');
+const https = require("https");
+const { execSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const ffmpeg = require("fluent-ffmpeg");
 
-module.exports = function(req, res) {
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "your_actual_key_here";
+
+module.exports = async function ytHook(req, res) {
   try {
     const { trackUrl } = req.body;
-    const query = encodeURIComponent(trackUrl);
-    const apiKey = process.env.YOUTUBE_API_KEY;
-    const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${query}%20official%20music%20video&key=${apiKey}&type=video&maxResults=1`;
+    if (!trackUrl) return res.status(400).json({ error: "Missing track URL" });
 
-    console.log('Querying YouTube API with URL:', apiUrl);
+    const songId = trackUrl.split("/").pop().split("?")[0];
+    const searchTerm = `official music video ${songId}`;
+    const queryUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchTerm)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
-    require('https').get(apiUrl, (response) => {
-      let data = '';
+    console.log("Querying YouTube API with URL:", queryUrl);
 
-      response.on('data', chunk => data += chunk);
-
-      response.on('end', () => {
+    https.get(queryUrl, (response) => {
+      let data = "";
+      response.on("data", chunk => data += chunk);
+      response.on("end", () => {
         try {
           const json = JSON.parse(data);
           const videoId = json.items?.[0]?.id?.videoId;
-
-          if (!videoId) return res.status(404).json({ error: 'No video found' });
+          if (!videoId) return res.status(404).json({ error: "No video found" });
 
           const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-          const outputPath = path.join(__dirname, `yt_${Date.now()}.mp4`);
+          const timestamp = Date.now();
+          const mp4Path = path.join(__dirname, `yt_${timestamp}.mp4`);
+          const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
 
-          console.log('Downloading:', videoUrl);
+          execSync(`python3 -m yt_dlp -f mp4 -o "${mp4Path}" "${videoUrl}"`, { stdio: "pipe" });
 
-          execSync(`python3 -m yt_dlp -f mp4 -o "${outputPath}" "${videoUrl}"`, { stdio: 'inherit' });
-
-          const gifPath = outputPath.replace('.mp4', '.gif');
-          ffmpeg(outputPath)
-            .setStartTime('00:00:30')
-            .setDuration(5)
-            .outputOptions('-vf', 'fps=10,scale=360:-1:flags=lanczos')
+          ffmpeg(mp4Path)
+            .setStartTime("00:00:30")
+            .duration(5)
+            .outputOptions(["-vf", "fps=10,scale=320:-1:flags=lanczos"])
             .loop(0)
             .save(gifPath)
-            .on('end', () => {
-              fs.unlinkSync(outputPath);
-              return res.json({ gifUrl: `/gifs/${path.basename(gifPath)}` });
+            .on("end", () => {
+              res.sendFile(gifPath);
+              setTimeout(() => {
+                fs.unlink(mp4Path, () => {});
+                fs.unlink(gifPath, () => {});
+              }, 60000);
+            })
+            .on("error", err => {
+              console.error("GIF conversion failed:", err);
+              res.status(500).json({ error: "Failed to convert video to GIF" });
             });
-
         } catch (err) {
-          console.error('Error parsing response or downloading/processing video:', err);
-          res.status(500).json({ error: 'Internal server error' });
+          console.error("Error parsing response or downloading/processing video:", err);
+          res.status(500).json({ error: err.message });
         }
       });
-    }).on('error', err => {
-      console.error('YouTube API request error:', err);
-      res.status(500).json({ error: 'Failed to fetch from YouTube API' });
     });
+
   } catch (err) {
-    console.error('ytHook internal error:', err);
-    res.status(500).json({ error: 'ytHook execution failed' });
+    console.error("ytHook error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
