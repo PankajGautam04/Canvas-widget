@@ -32,13 +32,13 @@ async function extractSpotifyCanvas(trackUrl) {
   const page = await browser.newPage();
   await page.goto(`https://www.canvasdownloader.com/canvas?link=${trackUrl}`, {
     waitUntil: 'networkidle2',
-    timeout: 30000,
+    timeout: 60000,
   });
 
   const shot1 = path.join(__dirname, 'debug_step1_loaded.png');
   await page.screenshot({ path: shot1 });
 
-  await page.waitForSelector('a[download]', { timeout: 10000 }).catch(() => null);
+  await page.waitForSelector('a[download]', { timeout: 15000 }).catch(() => null);
   const shot2 = path.join(__dirname, 'debug_step2_after_wait.png');
   await page.screenshot({ path: shot2 });
 
