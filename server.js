@@ -1,42 +1,66 @@
-// server.js
-const express = require('express');
-const bodyParser = require('body-parser');
-const puppeteer = require('puppeteer-core');
-const path = require('path');
+const express = require("express");
+const puppeteer = require("puppeteer-core");
+const fs = require("fs");
+const path = require("path");
+const ffmpeg = require("fluent-ffmpeg");
+const { execSync } = require("child_process");
+const ytHook = require("./yt-hook");
+
 const app = express();
+app.use(express.json());
+
 const PORT = process.env.PORT || 10000;
+const CHROME_PATH = "/usr/bin/chromium/chrome";
 
-const ytHook = require('./yt-hook');
-
-app.use(bodyParser.json());
-
-app.post('/extract-canvas', async (req, res) => {
+app.post("/extract-canvas", async (req, res) => {
   const { trackUrl } = req.body;
-
-  if (!trackUrl || !trackUrl.includes('open.spotify.com/track/')) {
-    return res.status(400).json({ error: 'Invalid Spotify track URL' });
+  if (!trackUrl || !trackUrl.includes("spotify.com/track/")) {
+    return res.status(400).json({ error: "Invalid Spotify track URL" });
   }
 
   try {
     const browser = await puppeteer.launch({
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      executablePath: CHROME_PATH,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
     const page = await browser.newPage();
-    await page.goto(`https://www.canvasdownloader.com/canvas?link=${trackUrl}`, { waitUntil: 'networkidle2' });
+    await page.goto(`https://www.canvasdownloader.com/canvas?link=${trackUrl}`, {
+      waitUntil: "networkidle2",
+      timeout: 30000
+    });
 
-    // Wait for download button to appear
-    await page.waitForSelector('a[href^="/downloads/"]', { timeout: 5000 });
-    const gifUrl = await page.$eval('a[href^="/downloads/"]', a => a.href);
+    await page.waitForSelector("a.download-button", { timeout: 10000 });
+    const videoUrl = await page.$eval("a.download-button", el => el.href);
+
+    const timestamp = Date.now();
+    const videoPath = path.join(__dirname, `canvas_${timestamp}.mp4`);
+    const gifPath = path.join(__dirname, `canvas_${timestamp}.gif`);
+
+    execSync(`curl -L -o ${videoPath} "${videoUrl}"`);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .setStartTime("00:00:01")
+        .duration(4)
+        .outputOptions(["-vf", "fps=10,scale=320:-1:flags=lanczos"])
+        .loop(0)
+        .save(gifPath)
+        .on("end", resolve)
+        .on("error", reject);
+    });
 
     await browser.close();
+    res.sendFile(gifPath);
 
-    return res.json({ gifUrl });
+    setTimeout(() => {
+      fs.unlink(videoPath, () => {});
+      fs.unlink(gifPath, () => {});
+    }, 60000);
+
   } catch (err) {
-    console.error('Canvas extraction failed, falling back to YouTube:', err.message);
-    ytHook(req, res); // fallback
+    console.error("Canvas extraction failed, falling back to YouTube:", err.message);
+    return ytHook(req, res); // fallback
   }
 });
 
