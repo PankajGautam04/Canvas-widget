@@ -21,7 +21,7 @@ function cleanUpFile(filePath) {
 // --------- Spotify Canvas Extraction with Puppeteer ---------
 async function extractSpotifyCanvas(trackUrl) {
   const browser = await puppeteer.launch({
-    executablePath: '/opt/chrome/chrome-linux/chrome', // ✅ Corrected path
+    executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'), // ✅ Corrected path
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
