@@ -29,7 +29,7 @@ function getYoutubeGif(track, artist) {
           const mp4Path = path.join(__dirname, `${outName}.mp4`);
           const gifPath = path.join(__dirname, `${outName}.gif`);
 
-          execSync(`yt-dlp -f mp4 -o "${mp4Path}" "${videoUrl}"`);
+          execSync(`python3 -m yt_dlp -f mp4 -o "${mp4Path}" "${videoUrl}"`);
           execSync(`ffmpeg -ss 00:00:30 -i "${mp4Path}" -t 00:00:08 -vf "scale=300:-1,fps=15" -loop 0 "${gifPath}"`);
           fs.unlinkSync(mp4Path);
           resolve(gifPath);
