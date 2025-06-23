@@ -21,13 +21,12 @@ async function extractCanvasMp4(trackUrl) {
     executablePath: path.join(__dirname, 'chromium', 'chrome-linux', 'chrome'),
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    userDataDir: path.join(__dirname, 'puppeteer_profile') // persist login session
+    userDataDir: path.join(__dirname, 'puppeteer_profile') // persistent login
   });
 
   const page = await browser.newPage();
   const canvasUrls = [];
 
-  // Capture canvas .mp4 URLs
   page.on('request', req => {
     const url = req.url();
     if (url.includes('.mp4') && url.includes('canvas')) {
@@ -35,23 +34,28 @@ async function extractCanvasMp4(trackUrl) {
     }
   });
 
-  // Go to login page
+  // Go to Spotify login
   await page.goto('https://accounts.spotify.com/en/login', { waitUntil: 'networkidle2' });
   await page.screenshot({ path: 'debug_1_login_page.png' });
 
-  // Enter email and click Continue
-  await page.waitForSelector('#login-username');
+  // Enter email
+  await page.waitForSelector('#login-username', { timeout: 15000 });
   await page.type('#login-username', SPOTIFY_EMAIL);
-  await page.screenshot({ path: 'debug_2_enter_email.png' });
+  await page.screenshot({ path: 'debug_2_email_entered.png' });
 
-  await page.waitForSelector('span >> text=Continue');
-  await page.click('span >> text=Continue');
-  await page.waitForTimeout(1500);
-  await page.screenshot({ path: 'debug_3_after_continue.png' });
+  // Click “Continue” using XPath
+  const [continueBtn] = await page.$x("//span[text()='Continue']/ancestor::button");
+  if (continueBtn) {
+    await continueBtn.click();
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: 'debug_3_continue_clicked.png' });
+  } else {
+    throw new Error('Continue button not found');
+  }
 
   // Click "Log in with a password"
-  await page.waitForSelector('button >> text=Log in with a password', { timeout: 10000 });
-  await page.click('button >> text=Log in with a password');
+  await page.waitForSelector('button[data-testid="login-with-password"]', { timeout: 10000 });
+  await page.click('button[data-testid="login-with-password"]');
   await page.waitForTimeout(1000);
   await page.screenshot({ path: 'debug_4_password_option.png' });
 
@@ -60,13 +64,12 @@ async function extractCanvasMp4(trackUrl) {
   await page.type('#login-password', SPOTIFY_PASSWORD);
   await page.screenshot({ path: 'debug_5_password_entered.png' });
 
-  // Submit login
-  await page.waitForSelector('span >> text=Log In');
+  // Click Login
   await Promise.all([
-    page.click('span >> text=Log In'),
+    page.click('#login-button'),
     page.waitForNavigation({ waitUntil: 'networkidle2' })
   ]);
-  await page.screenshot({ path: 'debug_6_after_login.png' });
+  await page.screenshot({ path: 'debug_6_logged_in.png' });
 
   // Go to track
   await page.goto(trackUrl, { waitUntil: 'networkidle2' });
@@ -74,19 +77,6 @@ async function extractCanvasMp4(trackUrl) {
   await page.screenshot({ path: 'debug_7_track_page.png' });
 
   await browser.close();
-
-  // Cleanup screenshots after 60 seconds
-  [
-    'debug_1_login_page.png',
-    'debug_2_enter_email.png',
-    'debug_3_after_continue.png',
-    'debug_4_password_option.png',
-    'debug_5_password_entered.png',
-    'debug_6_after_login.png',
-    'debug_7_track_page.png'
-  ].forEach(file => {
-    setTimeout(() => cleanUpFile(path.join(__dirname, file)), 60000);
-  });
 
   if (canvasUrls.length === 0) throw new Error('Canvas MP4 not found');
   return canvasUrls[0];
@@ -107,19 +97,19 @@ app.post('/extract-canvas', async (req, res) => {
   }
 });
 
-// Serve PNGs and show debug UI
+// Debug screenshot viewer
 app.get('/debug-canvas', (req, res) => {
-  const files = fs.readdirSync(__dirname).filter(f => f.endsWith('.png') && f.startsWith('debug_'));
-  if (files.length === 0) return res.status(404).send('No debug screenshots available.');
+  const shots = fs.readdirSync(__dirname).filter(f => f.startsWith('debug_') && f.endsWith('.png'));
+  if (shots.length === 0) return res.status(404).send('No debug screenshots found.');
 
   res.setHeader('Content-Type', 'text/html');
   res.send(`
     <h2>Debug Screenshots</h2>
-    ${files.map(f => `<div><p>${f}</p><img src="/${f}" width="300"/></div>`).join('')}
+    ${shots.map(f => `<div><p>${f}</p><img src="/${f}" width="300"/></div>`).join('')}
   `);
 });
 
-app.use(express.static(__dirname)); // serve PNG files
+app.use(express.static(__dirname)); // serve PNGs
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
