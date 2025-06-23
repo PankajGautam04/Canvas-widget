@@ -1,0 +1,4 @@
+{
+  "build": { "builder": "vercel/ncc:0.38.0" },
+  "start": { "cmd": "node server.js" }
+}
