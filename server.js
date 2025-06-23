@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -19,7 +19,6 @@ app.get('/get-canvas-gif', async (req, res) => {
 
   try {
     const browser = await puppeteer.launch({
-      executablePath: process.env.CHROME_BIN || process.env.PUPPETEER_EXECUTABLE_PATH,
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
