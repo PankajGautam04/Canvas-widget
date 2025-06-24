@@ -50,6 +50,7 @@ async function recordGifBuffer(videoUrl) {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
       '--autoplay-policy=no-user-gesture-required',
       '--window-size=1280,720'
     ],
@@ -57,28 +58,19 @@ async function recordGifBuffer(videoUrl) {
   });
 
   const page = await browser.newPage();
-  console.log('📺 Opening YouTube watch page...');
 
+  console.log('📺 Opening YouTube watch page...');
   await page.goto(videoUrl, { waitUntil: 'domcontentloaded' });
 
-  try {
-    await page.waitForSelector('video', { timeout: 10000 });
-    await page.evaluate(() => {
-      const video = document.querySelector('video');
-      video.muted = true;
-      video.play();
-    });
-  } catch (err) {
-    await browser.close();
-    throw new Error('Video player not loaded');
-  }
+  // Wait 5 seconds regardless of what's loaded
+  await page.waitForTimeout(5000);
 
   console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
   for (let i = 0; i < 192; i++) {
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     frames.push(buffer);
-    await page.waitForTimeout(1000 / 24);
+    await page.waitForTimeout(1000 / 24); // 24 fps
   }
 
   await browser.close();
@@ -86,18 +78,20 @@ async function recordGifBuffer(videoUrl) {
 
   return new Promise((resolve, reject) => {
     const inputStream = new PassThrough();
-    const outputChunks = [];
-    const outputStream = new PassThrough();
 
-    ffmpeg(inputStream)
+    const ffmpegProc = ffmpeg(inputStream)
       .inputFormat('image2pipe')
       .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
       .format('gif')
       .on('error', (err) => {
         console.error('❌ FFmpeg error:', err.message);
         reject(err);
-      })
-      .pipe(outputStream);
+      });
+
+    const outputChunks = [];
+    const outputStream = new PassThrough();
+
+    ffmpegProc.pipe(outputStream);
 
     outputStream.on('data', chunk => outputChunks.push(chunk));
     outputStream.on('end', () => {
