@@ -46,24 +46,30 @@ async function recordGifBuffer(videoUrl) {
 
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH,
-    headless: 'new',
+    headless: false, // Show browser UI to avoid CAPTCHA
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
+      '--window-size=1280,720',
       '--autoplay-policy=no-user-gesture-required',
-      '--window-size=1280,720'
+      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
     ],
     defaultViewport: { width: 1280, height: 720 }
   });
 
   const page = await browser.newPage();
 
+  // 🧠 Spoof automation detection
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+
   console.log('📺 Opening YouTube watch page...');
   await page.goto(videoUrl, { waitUntil: 'domcontentloaded' });
 
-  // Wait 5 seconds regardless of what's loaded
-  await page.waitForTimeout(5000);
+  console.log('⏳ Waiting 5 seconds to let video load...');
+  await page.waitForTimeout(5000); // Let video load fully
 
   console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
@@ -90,7 +96,6 @@ async function recordGifBuffer(videoUrl) {
 
     const outputChunks = [];
     const outputStream = new PassThrough();
-
     ffmpegProc.pipe(outputStream);
 
     outputStream.on('data', chunk => outputChunks.push(chunk));
