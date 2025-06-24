@@ -3,8 +3,8 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
-const stream = require('stream');
 const { PassThrough } = require('stream');
+const https = require('https');
 
 puppeteer.use(StealthPlugin());
 
@@ -16,7 +16,6 @@ const CHROME_PATH = path.join(__dirname, 'chromium', 'chrome-linux', 'chrome');
 
 async function searchYouTubeVideo(query) {
   console.log(`🔍 Searching YouTube for: ${query}`);
-  const https = require('https');
   const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
   return new Promise((resolve, reject) => {
@@ -59,21 +58,29 @@ async function recordGifBuffer(videoUrl) {
 
   const page = await browser.newPage();
 
-  console.log('📺 Loading video player...');
-  await page.goto('about:blank');
-  await page.setContent(`
-    <html>
-    <body style="margin:0;overflow:hidden;">
-      <video id="yt" width="1280" height="720" autoplay muted playsinline></video>
-      <script>
-        const url = "${videoUrl}";
-        const video = document.getElementById("yt");
-        video.src = url.replace("watch?v=", "embed/") + "?autoplay=1&mute=1";
-        video.play();
-      </script>
-    </body>
-    </html>
-  `);
+  console.log('📺 Opening YouTube watch page...');
+  await page.goto(videoUrl, { waitUntil: 'networkidle2' });
+
+  try {
+    await page.waitForSelector('video', { timeout: 10000 });
+    console.log('▶️ Video element loaded.');
+  } catch (e) {
+    console.log('❌ Video element not found.');
+    await browser.close();
+    throw new Error('Video player not loaded');
+  }
+
+  await page.evaluate(() => {
+    const css = `
+      .ytp-chrome-top, .ytp-chrome-bottom, .ytp-gradient-top, .ytp-gradient-bottom,
+      .ytp-show-cards-title, .ytp-ce-element, .ytp-endscreen-content {
+        display: none !important;
+      }
+    `;
+    const style = document.createElement('style');
+    style.textContent = css;
+    document.head.appendChild(style);
+  });
 
   console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
