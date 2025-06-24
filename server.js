@@ -11,24 +11,21 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// 🔁 Fetch fresh proxies from ProxyScrape (HTTP proxies)
-async function getFreshProxies(limit = 10) {
+// 🔁 Fetch free proxies from Spys.one
+async function getSpysProxies(limit = 10) {
   try {
-    const res = await axios.get('https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=2000&country=all&ssl=all&anonymity=elite');
-    const proxies = res.data
-      .split('\n')
-      .map(p => p.trim())
-      .filter(p => p && p.includes(':'))
+    const res = await axios.get('http://spys.me/proxy.txt');
+    const matches = res.data.match(/\b\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b/g);
+    return matches
       .slice(0, limit)
-      .map(p => 'http://' + p); // prepend schema
-    return proxies;
+      .map(ip => `http://${ip}`);
   } catch (err) {
-    console.error('❌ Failed to fetch proxies:', err.message);
+    console.error('❌ Failed to fetch proxies from Spys.one:', err.message);
     return [];
   }
 }
 
-// 🔍 YouTube API v3 search
+// 🔍 Search YouTube for top video
 async function searchYouTubeVideo(title, artist) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   const query = encodeURIComponent(`${title} ${artist}`);
@@ -39,14 +36,14 @@ async function searchYouTubeVideo(title, artist) {
   return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
-// 🎬 Download and convert video to 8s GIF using yt-dlp and FFmpeg
+// 🎞️ Download & Convert to GIF
 async function downloadAndConvertToGif(videoUrl) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
   const videoPath = path.join(tempDir, 'video.mp4');
   const gifPath = path.join(tempDir, 'hook.gif');
 
-  const proxies = await getFreshProxies(10);
-  if (!proxies.length) throw new Error('No proxies available');
+  const proxies = await getSpysProxies(10);
+  if (!proxies.length) throw new Error('No proxies available from Spys.one');
 
   for (const proxy of proxies) {
     console.log(`🔁 Trying proxy: ${proxy}`);
@@ -91,10 +88,10 @@ async function downloadAndConvertToGif(videoUrl) {
   }
 
   fs.rmSync(tempDir, { recursive: true, force: true });
-  throw new Error(`All proxies failed`);
+  throw new Error(`All proxies failed from Spys.one`);
 }
 
-// 🧠 Main API route
+// 🧠 Main API
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
   if (!title || !artist) return res.status(400).json({ error: 'Missing title or artist' });
