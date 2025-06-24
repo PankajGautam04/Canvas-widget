@@ -1,5 +1,3 @@
-// server.js
-
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -15,7 +13,6 @@ app.use(express.json());
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const CHROME_PATH = path.join(__dirname, 'chromium', 'chrome-linux', 'chrome');
 
-// --- YouTube Search ---
 async function searchYouTubeVideo(query) {
   console.log(`🔍 Searching YouTube for: ${query}`);
   const https = require('https');
@@ -44,7 +41,6 @@ async function searchYouTubeVideo(query) {
   });
 }
 
-// --- Record GIF ---
 async function recordGifBuffer(videoUrl) {
   console.log('🚀 Launching browser for:', videoUrl);
 
@@ -61,28 +57,25 @@ async function recordGifBuffer(videoUrl) {
   });
 
   const page = await browser.newPage();
+  console.log('📺 Opening YouTube watch page...');
 
-  // Load embedded player for better autoplay
-  const embedUrl = videoUrl.replace("watch?v=", "embed/") + "?autoplay=1&mute=1";
-  console.log('📺 Opening YouTube embed player...');
-  await page.goto(embedUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+  await page.goto(videoUrl, { waitUntil: 'domcontentloaded' });
 
-  // Wait for <video> to appear
   try {
-    await page.waitForSelector("video", { timeout: 15000 });
-    console.log('✅ Video element loaded');
+    await page.waitForSelector('video', { timeout: 10000 });
+    await page.evaluate(() => {
+      const video = document.querySelector('video');
+      video.muted = true;
+      video.play();
+    });
   } catch (err) {
     await browser.close();
-    console.error("❌ Video element not found.");
-    throw new Error("Video player not loaded");
+    throw new Error('Video player not loaded');
   }
 
-  // Capture screenshots
+  console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
-  const frameCount = 192; // 8 seconds * 24 fps
-  console.log(`🎞️ Capturing ${frameCount} frames at 24 fps...`);
-
-  for (let i = 0; i < frameCount; i++) {
+  for (let i = 0; i < 192; i++) {
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     frames.push(buffer);
     await page.waitForTimeout(1000 / 24);
@@ -91,27 +84,25 @@ async function recordGifBuffer(videoUrl) {
   await browser.close();
   console.log('✅ Captured all frames. Converting to GIF...');
 
-  // Stream frames into FFmpeg
   return new Promise((resolve, reject) => {
     const inputStream = new PassThrough();
-    const ffmpegProc = ffmpeg(inputStream)
-      .inputFormat('image2pipe')
-      .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
-      .format('gif');
-
     const outputChunks = [];
     const outputStream = new PassThrough();
 
-    ffmpegProc.pipe(outputStream);
+    ffmpeg(inputStream)
+      .inputFormat('image2pipe')
+      .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
+      .format('gif')
+      .on('error', (err) => {
+        console.error('❌ FFmpeg error:', err.message);
+        reject(err);
+      })
+      .pipe(outputStream);
 
     outputStream.on('data', chunk => outputChunks.push(chunk));
     outputStream.on('end', () => {
       console.log('🎉 GIF created in memory');
       resolve(Buffer.concat(outputChunks));
-    });
-    ffmpegProc.on('error', err => {
-      console.error('❌ FFmpeg error:', err.message);
-      reject(err);
     });
 
     for (const frame of frames) {
@@ -121,7 +112,6 @@ async function recordGifBuffer(videoUrl) {
   });
 }
 
-// --- API Endpoint ---
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
@@ -143,7 +133,6 @@ app.post('/yt-hook', async (req, res) => {
   }
 });
 
-// --- Start Server ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
