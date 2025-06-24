@@ -1,10 +1,11 @@
+// File: ytHook.js
+
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-
 puppeteer.use(StealthPlugin());
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "your_actual_key_here";
@@ -29,30 +30,17 @@ module.exports = async function ytHook(req, res) {
 
           const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
           const timestamp = Date.now();
-          const mp4Path = path.join(__dirname, `yt_${timestamp}.mp4`);
           const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
 
-          await recordYouTube(videoUrl, mp4Path);
+          await recordYouTube(videoUrl, gifPath);
 
-          ffmpeg(mp4Path)
-            .duration(8)
-            .outputOptions(["-vf", "fps=10,scale=320:-1:flags=lanczos"])
-            .loop(0)
-            .save(gifPath)
-            .on("end", () => {
-              res.sendFile(gifPath);
-              setTimeout(() => {
-                fs.unlink(mp4Path, () => {});
-                fs.unlink(gifPath, () => {});
-              }, 60000);
-            })
-            .on("error", err => {
-              console.error("GIF conversion failed:", err);
-              res.status(500).json({ error: "Failed to convert video to GIF" });
-            });
+          res.sendFile(gifPath);
+
+          setTimeout(() => fs.unlinkSync(gifPath), 60000);
+
         } catch (err) {
-          console.error("Error processing YouTube response:", err);
-          res.status(500).json({ error: err.message });
+          console.error("YouTube fallback failed:", err);
+          res.status(500).json({ error: "Processing failed" });
         }
       });
     });
@@ -63,30 +51,35 @@ module.exports = async function ytHook(req, res) {
   }
 };
 
-async function recordYouTube(videoUrl, outputPath) {
+async function recordYouTube(videoUrl, gifPath) {
   const browser = await puppeteer.launch({
-    headless: false,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      `--window-size=1280,720`
-    ]
+    headless: false, // use true with xvfb-run
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--window-size=1280,720"]
   });
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 720 });
-  await page.goto(videoUrl, { waitUntil: 'networkidle2' });
 
-  // Auto-play the video
-  await page.evaluate(() => {
-    const video = document.querySelector("video");
-    if (video) video.play();
+  await page.goto(videoUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+  // Click play (YouTube videos auto-pause in headless mode)
+  await page.keyboard.press("k");
+  await page.waitForTimeout(1000);
+
+  // Take screenshot of visible part as fallback (replace with real screen recording)
+  const tempPng = gifPath.replace(".gif", ".png");
+  await page.screenshot({ path: tempPng });
+  await browser.close();
+
+  // Turn screenshot into GIF placeholder (just a static frame)
+  await new Promise((resolve, reject) => {
+    ffmpeg(tempPng)
+      .loop(8)
+      .outputOptions(["-vf", "fps=10,scale=320:-1:flags=lanczos"])
+      .save(gifPath)
+      .on("end", resolve)
+      .on("error", reject);
   });
 
-  // Use ffmpeg to record the screen
-  const stream = await page.screenshot({ path: outputPath }); // Replace with actual screen recorder later
-
-  await new Promise(resolve => setTimeout(resolve, 8000));
-
-  await browser.close();
+  fs.unlinkSync(tempPng);
 }
