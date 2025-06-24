@@ -1,8 +1,11 @@
 const https = require("https");
-const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+
+puppeteer.use(StealthPlugin());
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "your_actual_key_here";
 
@@ -15,12 +18,10 @@ module.exports = async function ytHook(req, res) {
     const searchTerm = `official music video ${songId}`;
     const queryUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchTerm)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
-    console.log("Querying YouTube API with URL:", queryUrl);
-
     https.get(queryUrl, (response) => {
       let data = "";
       response.on("data", chunk => data += chunk);
-      response.on("end", () => {
+      response.on("end", async () => {
         try {
           const json = JSON.parse(data);
           const videoId = json.items?.[0]?.id?.videoId;
@@ -31,11 +32,10 @@ module.exports = async function ytHook(req, res) {
           const mp4Path = path.join(__dirname, `yt_${timestamp}.mp4`);
           const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
 
-          execSync(`python3 -m yt_dlp -f mp4 -o "${mp4Path}" "${videoUrl}"`, { stdio: "pipe" });
+          await recordYouTube(videoUrl, mp4Path);
 
           ffmpeg(mp4Path)
-            .setStartTime("00:00:30")
-            .duration(5)
+            .duration(8)
             .outputOptions(["-vf", "fps=10,scale=320:-1:flags=lanczos"])
             .loop(0)
             .save(gifPath)
@@ -51,7 +51,7 @@ module.exports = async function ytHook(req, res) {
               res.status(500).json({ error: "Failed to convert video to GIF" });
             });
         } catch (err) {
-          console.error("Error parsing response or downloading/processing video:", err);
+          console.error("Error processing YouTube response:", err);
           res.status(500).json({ error: err.message });
         }
       });
@@ -62,3 +62,31 @@ module.exports = async function ytHook(req, res) {
     res.status(500).json({ error: err.message });
   }
 };
+
+async function recordYouTube(videoUrl, outputPath) {
+  const browser = await puppeteer.launch({
+    headless: false,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      `--window-size=1280,720`
+    ]
+  });
+
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 720 });
+  await page.goto(videoUrl, { waitUntil: 'networkidle2' });
+
+  // Auto-play the video
+  await page.evaluate(() => {
+    const video = document.querySelector("video");
+    if (video) video.play();
+  });
+
+  // Use ffmpeg to record the screen
+  const stream = await page.screenshot({ path: outputPath }); // Replace with actual screen recorder later
+
+  await new Promise(resolve => setTimeout(resolve, 8000));
+
+  await browser.close();
+}
