@@ -15,13 +15,9 @@ app.use(express.json());
 const proxies = [
   'http://103.170.22.167:8080',
   'http://185.246.85.105:80',
-  'http://47.252.29.28:11222'
+  'http://47.252.29.28:11222',
+  'http://78.28.152.113:80'
 ];
-
-// ✅ Random proxy selector
-function getRandomProxy() {
-  return proxies[Math.floor(Math.random() * proxies.length)];
-}
 
 // ✅ YouTube API v3 search
 async function searchYouTubeVideo(title, artist) {
@@ -36,14 +32,15 @@ async function searchYouTubeVideo(title, artist) {
   return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
-// ✅ Download + Convert to 8s GIF (with proxy retry)
+// ✅ Download + Convert to 8s GIF (try all proxies)
 async function downloadAndConvertToGif(videoUrl) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
   const videoPath = path.join(tempDir, 'video.mp4');
   const gifPath = path.join(tempDir, 'hook.gif');
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const proxy = getRandomProxy();
+  for (const proxy of proxies) {
+    console.log(`🔁 Trying proxy: ${proxy}`);
+
     const args = [
       videoUrl,
       '-f', 'mp4',
@@ -51,8 +48,6 @@ async function downloadAndConvertToGif(videoUrl) {
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
       '--proxy', proxy
     ];
-
-    console.log(`🔁 Attempt ${attempt} with proxy ${proxy}`);
 
     try {
       await ytdlp(args);
@@ -82,13 +77,12 @@ async function downloadAndConvertToGif(videoUrl) {
       return buffer;
 
     } catch (err) {
-      console.error(`❌ Attempt ${attempt} failed:`, err.message);
-      if (attempt === 2) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-        throw err;
-      }
+      console.error(`❌ Proxy failed (${proxy}):`, err.message);
     }
   }
+
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  throw new Error(`All proxies failed. Tried: ${proxies.join(', ')}`);
 }
 
 // ✅ API route
