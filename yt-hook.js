@@ -1,105 +1,88 @@
-// server.js - YouTube Screen Recording Only
+const https = require("https");
+const fs = require("fs");
+const path = require("path");
+const ffmpeg = require("fluent-ffmpeg");
+const puppeteer = require("puppeteer");
 
-const express = require('express');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const fs = require('fs');
-const path = require('path');
-const ffmpeg = require('fluent-ffmpeg');
-const { execSync } = require('child_process');
-const https = require('https');
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
-puppeteer.use(StealthPlugin());
+module.exports = async function ytHook(req, res) {
+  const { song, artist } = req.body;
+  if (!song || !artist) {
+    return res.status(400).json({ error: "Missing 'song' or 'artist' in request body" });
+  }
 
-const app = express();
-app.use(express.json());
+  const searchTerm = `${song} ${artist} official music video`;
+  const queryUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchTerm)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
-const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'your_actual_key_here';
-
-function cleanUpFile(filePath) {
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-}
-
-// YouTube fallback logic with Puppeteer screen recording
-async function recordYouTubeToGif(query, res) {
-  const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
-
-  https.get(searchUrl, response => {
-    let data = '';
-    response.on('data', chunk => data += chunk);
-    response.on('end', async () => {
+  https.get(queryUrl, response => {
+    let data = "";
+    response.on("data", chunk => data += chunk);
+    response.on("end", async () => {
       try {
         const json = JSON.parse(data);
         const videoId = json.items?.[0]?.id?.videoId;
-        if (!videoId) return res.status(404).json({ error: 'No video found' });
-
-        const browser = await puppeteer.launch({
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 720 });
+        if (!videoId) return res.status(404).json({ error: "No YouTube video found" });
 
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         const timestamp = Date.now();
-        const outputWebm = path.join(__dirname, `record_${timestamp}.webm`);
-        const outputGif = path.join(__dirname, `hook_${timestamp}.gif`);
+        const webmPath = path.join(__dirname, `yt_${timestamp}.webm`);
+        const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
+        const screenshotPath = path.join(__dirname, `yt_debug_${timestamp}.png`);
 
-        const client = await page.target().createCDPSession();
-        await client.send('Page.startScreencast', { format: 'jpeg', quality: 100, everyNthFrame: 1 });
-
-        const frames = [];
-        client.on('Page.screencastFrame', async ({ data, sessionId }) => {
-          frames.push(Buffer.from(data.split(',')[1], 'base64'));
-          await client.send('Page.screencastFrameAck', { sessionId });
+        // Launch headless browser
+        const browser = await puppeteer.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"]
         });
 
-        await page.goto(videoUrl, { waitUntil: 'networkidle2' });
-        await page.waitForTimeout(8000);
-        await client.send('Page.stopScreencast');
+        const page = await browser.newPage();
+        await page.setViewport({ width: 640, height: 360 });
+        await page.goto(videoUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+        // Wait for video to load and autoplay
+        await page.waitForSelector("video", { timeout: 15000 });
+        await page.screenshot({ path: screenshotPath });
+
+        const stream = await page.evaluateHandle(() => {
+          const canvas = document.createElement("canvas");
+          const video = document.querySelector("video");
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 360;
+          const ctx = canvas.getContext("2d");
+
+          return new MediaStream([canvas.captureStream(10).getVideoTracks()[0]]);
+        });
+
+        const recorder = require("node-webm-recorder");
+        const buffer = await recorder(stream, 8000); // record for 8s
+        fs.writeFileSync(webmPath, buffer);
 
         await browser.close();
 
-        const mjpegPath = path.join(__dirname, `frames_${timestamp}.mjpeg`);
-        fs.writeFileSync(mjpegPath, Buffer.concat(frames));
-
-        ffmpeg(mjpegPath)
-          .outputOptions('-vf', 'fps=10,scale=320:-1:flags=lanczos')
+        ffmpeg(webmPath)
+          .outputOptions("-vf", "fps=10,scale=320:-1:flags=lanczos")
           .duration(8)
-          .save(outputGif)
-          .on('end', () => {
-            res.sendFile(outputGif);
+          .save(gifPath)
+          .on("end", () => {
+            res.sendFile(gifPath);
             setTimeout(() => {
-              cleanUpFile(outputGif);
-              cleanUpFile(mjpegPath);
+              fs.unlink(webmPath, () => {});
+              fs.unlink(gifPath, () => {});
+              fs.unlink(screenshotPath, () => {});
             }, 60000);
           })
-          .on('error', err => {
-            console.error('GIF conversion failed:', err);
-            res.status(500).json({ error: 'Failed to convert to GIF' });
+          .on("error", err => {
+            console.error("FFmpeg error:", err);
+            res.status(500).json({ error: "Failed to convert to GIF" });
           });
-      } catch (err) {
-        console.error('YouTube API or recording error:', err);
-        res.status(500).json({ error: err.message });
+      } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to parse YouTube response" });
       }
     });
-  }).on('error', err => {
-    res.status(500).json({ error: 'YouTube API request failed: ' + err.message });
+  }).on("error", err => {
+    console.error(err);
+    res.status(500).json({ error: "YouTube API call failed" });
   });
-}
-
-app.post('/extract-canvas', async (req, res) => {
-  const { trackUrl } = req.body;
-  if (!trackUrl || !trackUrl.includes('open.spotify.com/track')) {
-    return res.status(400).json({ error: 'Invalid Spotify track URL' });
-  }
-  const trackId = trackUrl.split('/').pop().split('?')[0];
-  const query = `official music video ${trackId}`;
-  recordYouTubeToGif(query, res);
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
+};
