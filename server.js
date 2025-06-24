@@ -2,30 +2,28 @@ const express = require('express');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const ffmpegPath = require('ffmpeg-static');
-const ytdlp = require('youtube-dl-exec'); // ✅ FIXED: no .raw
-const { v4: uuidv4 } = require('uuid');
 const os = require('os');
+const ffmpegPath = require('ffmpeg-static');
+const ytdlp = require('youtube-dl-exec');
 const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 
-// ✅ Proxy list to avoid rate-limiting
+// ✅ Proxy list
 const proxies = [
   'http://185.246.85.105:80',
   'http://47.252.29.28:11222',
   'http://103.170.22.167:8080'
 ];
 
-function getRandomProxyArgs() {
-  const proxy = proxies[Math.floor(Math.random() * proxies.length)];
-  console.log('➡️ Using proxy:', proxy);
-  return ['--proxy', proxy];
+// ✅ Random proxy selector
+function getRandomProxy() {
+  return proxies[Math.floor(Math.random() * proxies.length)];
 }
 
-// ✅ Search YouTube Data API v3 for video
+// ✅ YouTube API v3 search
 async function searchYouTubeVideo(title, artist) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   const query = encodeURIComponent(`${title} ${artist}`);
@@ -38,50 +36,62 @@ async function searchYouTubeVideo(title, artist) {
   return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
-// ✅ Download + Convert to 8s GIF
+// ✅ Download + Convert to 8s GIF (with proxy retry)
 async function downloadAndConvertToGif(videoUrl) {
-  return new Promise((resolve, reject) => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
-    const videoPath = path.join(tempDir, 'video.mp4');
-    const gifPath = path.join(tempDir, 'hook.gif');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
+  const videoPath = path.join(tempDir, 'video.mp4');
+  const gifPath = path.join(tempDir, 'hook.gif');
 
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const proxy = getRandomProxy();
     const args = [
       videoUrl,
       '-f', 'mp4',
       '-o', videoPath,
-      ...getRandomProxyArgs()
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      '--proxy', proxy
     ];
 
-    console.log('⬇️ Running yt-dlp...');
-    const ytdlpProcess = ytdlp(args);
+    console.log(`🔁 Attempt ${attempt} with proxy ${proxy}`);
 
-    ytdlpProcess.on('close', (code) => {
-      if (code !== 0 || !fs.existsSync(videoPath)) {
-        return reject(new Error('yt-dlp failed or video not downloaded.'));
+    try {
+      await ytdlp(args);
+      if (!fs.existsSync(videoPath)) {
+        throw new Error('yt-dlp finished but video file not found.');
       }
 
       console.log('🎬 Converting to GIF...');
-      execFile(ffmpegPath, [
-        '-ss', '00:00:20',
-        '-t', '8',
-        '-i', videoPath,
-        '-vf', 'fps=12,scale=320:-1:flags=lanczos',
-        '-y',
-        gifPath
-      ], (err) => {
-        if (err || !fs.existsSync(gifPath)) {
-          return reject(new Error('FFmpeg conversion failed.'));
-        }
-
-        const buffer = fs.readFileSync(gifPath);
-        fs.rmSync(tempDir, { recursive: true, force: true });
-        resolve(buffer);
+      await new Promise((resolve, reject) => {
+        execFile(ffmpegPath, [
+          '-ss', '00:00:20',
+          '-t', '8',
+          '-i', videoPath,
+          '-vf', 'fps=12,scale=320:-1:flags=lanczos',
+          '-y',
+          gifPath
+        ], (err) => {
+          if (err || !fs.existsSync(gifPath)) {
+            return reject(new Error('FFmpeg conversion failed.'));
+          }
+          resolve();
+        });
       });
-    });
-  });
+
+      const buffer = fs.readFileSync(gifPath);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return buffer;
+
+    } catch (err) {
+      console.error(`❌ Attempt ${attempt} failed:`, err.message);
+      if (attempt === 2) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        throw err;
+      }
+    }
+  }
 }
 
-// ✅ Main endpoint
+// ✅ API route
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
@@ -92,6 +102,7 @@ app.post('/yt-hook', async (req, res) => {
   try {
     const videoUrl = await searchYouTubeVideo(title, artist);
     console.log('🔗 Found video:', videoUrl);
+
     const gifBuffer = await downloadAndConvertToGif(videoUrl);
     res.setHeader('Content-Type', 'image/gif');
     res.send(gifBuffer);
@@ -101,6 +112,7 @@ app.post('/yt-hook', async (req, res) => {
   }
 });
 
+// ✅ Start server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
