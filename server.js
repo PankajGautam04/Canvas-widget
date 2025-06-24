@@ -3,7 +3,7 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
-const ytdlp = require('youtube-dl-exec').raw;
+const ytdlp = require('youtube-dl-exec'); // ✅ FIXED: no .raw
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
 const axios = require('axios');
@@ -12,30 +12,33 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// Rotate through multiple working proxies
+// ✅ Proxy list to avoid rate-limiting
 const proxies = [
   'http://185.246.85.105:80',
   'http://47.252.29.28:11222',
-  'http://103.170.22.167:8080' // Add more if needed
+  'http://103.170.22.167:8080'
 ];
 
-function getProxyArgs() {
+function getRandomProxyArgs() {
   const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+  console.log('➡️ Using proxy:', proxy);
   return ['--proxy', proxy];
 }
 
+// ✅ Search YouTube Data API v3 for video
 async function searchYouTubeVideo(title, artist) {
   const apiKey = process.env.YOUTUBE_API_KEY;
-  const q = encodeURIComponent(`${title} ${artist}`);
-  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&q=${q}&key=${apiKey}`;
+  const query = encodeURIComponent(`${title} ${artist}`);
+  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&q=${query}&key=${apiKey}`;
 
-  const res = await axios.get(url);
-  const items = res.data.items;
-  if (items.length === 0) throw new Error('No video found');
+  const response = await axios.get(url);
+  const items = response.data.items;
+  if (!items.length) throw new Error('No video found');
 
   return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
+// ✅ Download + Convert to 8s GIF
 async function downloadAndConvertToGif(videoUrl) {
   return new Promise((resolve, reject) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
@@ -46,9 +49,10 @@ async function downloadAndConvertToGif(videoUrl) {
       videoUrl,
       '-f', 'mp4',
       '-o', videoPath,
-      ...getProxyArgs()
+      ...getRandomProxyArgs()
     ];
 
+    console.log('⬇️ Running yt-dlp...');
     const ytdlpProcess = ytdlp(args);
 
     ytdlpProcess.on('close', (code) => {
@@ -56,6 +60,7 @@ async function downloadAndConvertToGif(videoUrl) {
         return reject(new Error('yt-dlp failed or video not downloaded.'));
       }
 
+      console.log('🎬 Converting to GIF...');
       execFile(ffmpegPath, [
         '-ss', '00:00:20',
         '-t', '8',
@@ -76,6 +81,7 @@ async function downloadAndConvertToGif(videoUrl) {
   });
 }
 
+// ✅ Main endpoint
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
@@ -85,6 +91,7 @@ app.post('/yt-hook', async (req, res) => {
 
   try {
     const videoUrl = await searchYouTubeVideo(title, artist);
+    console.log('🔗 Found video:', videoUrl);
     const gifBuffer = await downloadAndConvertToGif(videoUrl);
     res.setHeader('Content-Type', 'image/gif');
     res.send(gifBuffer);
