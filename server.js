@@ -1,9 +1,10 @@
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const fs = require('fs');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
+const stream = require('stream');
+const { PassThrough } = require('stream');
 
 puppeteer.use(StealthPlugin());
 
@@ -13,11 +14,6 @@ app.use(express.json());
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const CHROME_PATH = path.join(__dirname, 'chromium', 'chrome-linux', 'chrome');
 
-function cleanUpFile(filePath) {
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-}
-
-// 🧠 Search YouTube using API
 async function searchYouTubeVideo(query) {
   console.log(`🔍 Searching YouTube for: ${query}`);
   const https = require('https');
@@ -46,10 +42,7 @@ async function searchYouTubeVideo(query) {
   });
 }
 
-// 🎥 Record and convert to GIF
-async function recordYouTubeToGif(videoUrl) {
-  const timestamp = Date.now();
-  const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
+async function recordGifBuffer(videoUrl) {
   console.log('🚀 Launching browser for:', videoUrl);
 
   const browser = await puppeteer.launch({
@@ -84,7 +77,7 @@ async function recordYouTubeToGif(videoUrl) {
 
   console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
-  for (let i = 0; i < 192; i++) { // 8s * 24fps
+  for (let i = 0; i < 192; i++) {
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     frames.push(buffer);
     await page.waitForTimeout(1000 / 24);
@@ -94,34 +87,35 @@ async function recordYouTubeToGif(videoUrl) {
   console.log('✅ Captured all frames. Converting to GIF...');
 
   return new Promise((resolve, reject) => {
-    const proc = ffmpeg()
-      .input('pipe:0')
+    const inputStream = new PassThrough();
+
+    const ffmpegProc = ffmpeg(inputStream)
       .inputFormat('image2pipe')
-      .outputOptions([
-        '-vf', 'fps=24,scale=320:-1:flags=lanczos'
-      ])
+      .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
       .format('gif')
-      .on('end', () => {
-        console.log('🎉 GIF conversion complete.');
-        resolve(gifPath);
-      })
       .on('error', (err) => {
         console.error('❌ FFmpeg error:', err.message);
         reject(err);
       });
 
-    const writeStream = fs.createWriteStream(gifPath);
-    proc.pipe(writeStream);
+    const outputChunks = [];
+    const outputStream = new PassThrough();
+
+    ffmpegProc.pipe(outputStream);
+
+    outputStream.on('data', chunk => outputChunks.push(chunk));
+    outputStream.on('end', () => {
+      console.log('🎉 GIF created in memory');
+      resolve(Buffer.concat(outputChunks));
+    });
 
     for (const frame of frames) {
-      proc.stdin.write(frame);
+      inputStream.write(frame);
     }
-
-    proc.stdin.end();
+    inputStream.end();
   });
 }
 
-// 🧠 Main API
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
@@ -133,35 +127,15 @@ app.post('/yt-hook', async (req, res) => {
   try {
     const query = `official music video ${title} ${artist}`;
     const videoUrl = await searchYouTubeVideo(query);
-    const gifPath = await recordYouTubeToGif(videoUrl);
+    const gifBuffer = await recordGifBuffer(videoUrl);
 
     res.setHeader('Content-Type', 'image/gif');
-    res.sendFile(gifPath, (err) => {
-      if (!err) {
-        cleanUpFile(gifPath);
-        console.log('🧹 Cleaned up temporary GIF:', gifPath);
-      } else {
-        console.error('❌ Error sending file:', err.message);
-      }
-    });
+    res.send(gifBuffer);
   } catch (err) {
     console.error('yt-hook error:', err.message || err);
     res.status(500).json({ error: err.message || err });
   }
 });
-
-// 🧪 Debug route to view GIFs
-app.get('/debug', (req, res) => {
-  const files = fs.readdirSync(__dirname).filter(f => f.endsWith('.gif'));
-  if (files.length === 0) return res.status(404).send('No debug GIFs found');
-  res.setHeader('Content-Type', 'text/html');
-  res.send(`
-    <h2>Generated GIFs</h2>
-    ${files.map(f => `<div><p>${f}</p><img src="/${f}" width="300"/></div>`).join('')}
-  `);
-});
-
-app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
