@@ -3,96 +3,88 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
-const ytdlp = require('yt-dlp-exec').raw;
+const ytdlp = require('youtube-dl-exec').raw;
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
+const axios = require('axios');
+require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 
-// ✅ Proxies that support YouTube downloads
+// Rotate through multiple working proxies
 const proxies = [
-  'http://138.201.5.68:3128',
-  'http://190.61.88.147:8080',
-  'http://45.167.124.33:999',
-  'http://47.252.29.28:11222' // Your proxy
+  'http://185.246.85.105:80',
+  'http://47.252.29.28:11222',
+  'http://103.170.22.167:8080' // Add more if needed
 ];
 
-function shuffle(array) {
-  return array.sort(() => Math.random() - 0.5);
+function getProxyArgs() {
+  const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+  return ['--proxy', proxy];
+}
+
+async function searchYouTubeVideo(title, artist) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  const q = encodeURIComponent(`${title} ${artist}`);
+  const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&q=${q}&key=${apiKey}`;
+
+  const res = await axios.get(url);
+  const items = res.data.items;
+  if (items.length === 0) throw new Error('No video found');
+
+  return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
 async function downloadAndConvertToGif(videoUrl) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
-  const videoPath = path.join(tempDir, 'video.mp4');
-  const gifPath = path.join(tempDir, 'hook.gif');
+  return new Promise((resolve, reject) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
+    const videoPath = path.join(tempDir, 'video.mp4');
+    const gifPath = path.join(tempDir, 'hook.gif');
 
-  const shuffledProxies = shuffle([...proxies]);
-  let success = false;
-  let lastError = null;
+    const args = [
+      videoUrl,
+      '-f', 'mp4',
+      '-o', videoPath,
+      ...getProxyArgs()
+    ];
 
-  for (const proxy of shuffledProxies) {
-    console.log(`🔌 Trying proxy: ${proxy}`);
+    const ytdlpProcess = ytdlp(args);
 
-    try {
-      await new Promise((resolve, reject) => {
-        const ytdlpProcess = ytdlp([
-          videoUrl,
-          '-f', 'mp4',
-          '-o', videoPath,
-          '--proxy', proxy
-        ]);
+    ytdlpProcess.on('close', (code) => {
+      if (code !== 0 || !fs.existsSync(videoPath)) {
+        return reject(new Error('yt-dlp failed or video not downloaded.'));
+      }
 
-        ytdlpProcess.on('close', (code) => {
-          if (code !== 0 || !fs.existsSync(videoPath)) {
-            return reject(new Error('yt-dlp failed or video not downloaded.'));
-          }
-          resolve();
-        });
+      execFile(ffmpegPath, [
+        '-ss', '00:00:20',
+        '-t', '8',
+        '-i', videoPath,
+        '-vf', 'fps=12,scale=320:-1:flags=lanczos',
+        '-y',
+        gifPath
+      ], (err) => {
+        if (err || !fs.existsSync(gifPath)) {
+          return reject(new Error('FFmpeg conversion failed.'));
+        }
+
+        const buffer = fs.readFileSync(gifPath);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        resolve(buffer);
       });
-
-      // If download was successful, convert to GIF
-      await new Promise((resolve, reject) => {
-        execFile(ffmpegPath, [
-          '-ss', '00:00:20',
-          '-t', '8',
-          '-i', videoPath,
-          '-vf', 'fps=12,scale=320:-1:flags=lanczos',
-          '-y',
-          gifPath
-        ], (err) => {
-          if (err || !fs.existsSync(gifPath)) {
-            return reject(new Error('FFmpeg conversion failed.'));
-          }
-          resolve();
-        });
-      });
-
-      const buffer = fs.readFileSync(gifPath);
-      fs.rmSync(tempDir, { recursive: true, force: true });
-      return buffer;
-
-    } catch (err) {
-      console.error(`❌ Proxy failed (${proxy}):`, err.message);
-      lastError = err;
-      // Clean up video file in case of partial/incomplete downloads
-      if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-    }
-  }
-
-  // Clean up tempDir even if all proxies fail
-  fs.rmSync(tempDir, { recursive: true, force: true });
-  throw lastError || new Error('All proxies failed');
+    });
+  });
 }
 
 app.post('/yt-hook', async (req, res) => {
-  const { videoUrl } = req.body;
+  const { title, artist } = req.body;
 
-  if (!videoUrl || (!videoUrl.includes('youtube.com') && !videoUrl.includes('youtu.be'))) {
-    return res.status(400).json({ error: 'Invalid or missing YouTube URL' });
+  if (!title || !artist) {
+    return res.status(400).json({ error: 'Missing title or artist' });
   }
 
   try {
+    const videoUrl = await searchYouTubeVideo(title, artist);
     const gifBuffer = await downloadAndConvertToGif(videoUrl);
     res.setHeader('Content-Type', 'image/gif');
     res.send(gifBuffer);
