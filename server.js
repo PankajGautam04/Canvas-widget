@@ -11,32 +11,42 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// ✅ Proxy list
-const proxies = [
-  'http://103.170.22.167:8080',
-  'http://185.246.85.105:80',
-  'http://47.252.29.28:11222',
-  'http://78.28.152.113:80'
-];
+// 🔁 Fetch fresh proxies from ProxyScrape (HTTP proxies)
+async function getFreshProxies(limit = 10) {
+  try {
+    const res = await axios.get('https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=2000&country=all&ssl=all&anonymity=elite');
+    const proxies = res.data
+      .split('\n')
+      .map(p => p.trim())
+      .filter(p => p && p.includes(':'))
+      .slice(0, limit)
+      .map(p => 'http://' + p); // prepend schema
+    return proxies;
+  } catch (err) {
+    console.error('❌ Failed to fetch proxies:', err.message);
+    return [];
+  }
+}
 
-// ✅ YouTube API v3 search
+// 🔍 YouTube API v3 search
 async function searchYouTubeVideo(title, artist) {
   const apiKey = process.env.YOUTUBE_API_KEY;
   const query = encodeURIComponent(`${title} ${artist}`);
   const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=1&q=${query}&key=${apiKey}`;
-
-  const response = await axios.get(url);
-  const items = response.data.items;
+  const res = await axios.get(url);
+  const items = res.data.items;
   if (!items.length) throw new Error('No video found');
-
   return `https://www.youtube.com/watch?v=${items[0].id.videoId}`;
 }
 
-// ✅ Download + Convert to 8s GIF (try all proxies)
+// 🎬 Download and convert video to 8s GIF using yt-dlp and FFmpeg
 async function downloadAndConvertToGif(videoUrl) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytgif-'));
   const videoPath = path.join(tempDir, 'video.mp4');
   const gifPath = path.join(tempDir, 'hook.gif');
+
+  const proxies = await getFreshProxies(10);
+  if (!proxies.length) throw new Error('No proxies available');
 
   for (const proxy of proxies) {
     console.log(`🔁 Trying proxy: ${proxy}`);
@@ -46,16 +56,17 @@ async function downloadAndConvertToGif(videoUrl) {
       '-f', 'mp4',
       '-o', videoPath,
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      '--proxy', proxy
+      '--proxy', proxy,
+      '--no-check-certificate',
+      '--geo-bypass',
+      '--force-ipv4'
     ];
 
     try {
       await ytdlp(args);
-      if (!fs.existsSync(videoPath)) {
-        throw new Error('yt-dlp finished but video file not found.');
-      }
+      if (!fs.existsSync(videoPath)) throw new Error('yt-dlp finished but video not downloaded.');
 
-      console.log('🎬 Converting to GIF...');
+      console.log('🎞️ Download complete. Converting to GIF...');
       await new Promise((resolve, reject) => {
         execFile(ffmpegPath, [
           '-ss', '00:00:20',
@@ -65,9 +76,7 @@ async function downloadAndConvertToGif(videoUrl) {
           '-y',
           gifPath
         ], (err) => {
-          if (err || !fs.existsSync(gifPath)) {
-            return reject(new Error('FFmpeg conversion failed.'));
-          }
+          if (err || !fs.existsSync(gifPath)) return reject(new Error('FFmpeg conversion failed'));
           resolve();
         });
       });
@@ -82,16 +91,13 @@ async function downloadAndConvertToGif(videoUrl) {
   }
 
   fs.rmSync(tempDir, { recursive: true, force: true });
-  throw new Error(`All proxies failed. Tried: ${proxies.join(', ')}`);
+  throw new Error(`All proxies failed`);
 }
 
-// ✅ API route
+// 🧠 Main API route
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
-
-  if (!title || !artist) {
-    return res.status(400).json({ error: 'Missing title or artist' });
-  }
+  if (!title || !artist) return res.status(400).json({ error: 'Missing title or artist' });
 
   try {
     const videoUrl = await searchYouTubeVideo(title, artist);
@@ -106,7 +112,7 @@ app.post('/yt-hook', async (req, res) => {
   }
 });
 
-// ✅ Start server
+// 🚀 Start server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
