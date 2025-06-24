@@ -1,10 +1,11 @@
+// server.js
+
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
 const { PassThrough } = require('stream');
-const https = require('https');
 
 puppeteer.use(StealthPlugin());
 
@@ -14,8 +15,10 @@ app.use(express.json());
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const CHROME_PATH = path.join(__dirname, 'chromium', 'chrome-linux', 'chrome');
 
+// --- YouTube Search ---
 async function searchYouTubeVideo(query) {
   console.log(`🔍 Searching YouTube for: ${query}`);
+  const https = require('https');
   const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
   return new Promise((resolve, reject) => {
@@ -41,6 +44,7 @@ async function searchYouTubeVideo(query) {
   });
 }
 
+// --- Record GIF ---
 async function recordGifBuffer(videoUrl) {
   console.log('🚀 Launching browser for:', videoUrl);
 
@@ -58,33 +62,27 @@ async function recordGifBuffer(videoUrl) {
 
   const page = await browser.newPage();
 
-  console.log('📺 Opening YouTube watch page...');
-  await page.goto(videoUrl, { waitUntil: 'networkidle2' });
+  // Load embedded player for better autoplay
+  const embedUrl = videoUrl.replace("watch?v=", "embed/") + "?autoplay=1&mute=1";
+  console.log('📺 Opening YouTube embed player...');
+  await page.goto(embedUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
+  // Wait for <video> to appear
   try {
-    await page.waitForSelector('video', { timeout: 10000 });
-    console.log('▶️ Video element loaded.');
-  } catch (e) {
-    console.log('❌ Video element not found.');
+    await page.waitForSelector("video", { timeout: 15000 });
+    console.log('✅ Video element loaded');
+  } catch (err) {
     await browser.close();
-    throw new Error('Video player not loaded');
+    console.error("❌ Video element not found.");
+    throw new Error("Video player not loaded");
   }
 
-  await page.evaluate(() => {
-    const css = `
-      .ytp-chrome-top, .ytp-chrome-bottom, .ytp-gradient-top, .ytp-gradient-bottom,
-      .ytp-show-cards-title, .ytp-ce-element, .ytp-endscreen-content {
-        display: none !important;
-      }
-    `;
-    const style = document.createElement('style');
-    style.textContent = css;
-    document.head.appendChild(style);
-  });
-
-  console.log('🎞️ Capturing 192 frames at 24 fps...');
+  // Capture screenshots
   const frames = [];
-  for (let i = 0; i < 192; i++) {
+  const frameCount = 192; // 8 seconds * 24 fps
+  console.log(`🎞️ Capturing ${frameCount} frames at 24 fps...`);
+
+  for (let i = 0; i < frameCount; i++) {
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     frames.push(buffer);
     await page.waitForTimeout(1000 / 24);
@@ -93,17 +91,13 @@ async function recordGifBuffer(videoUrl) {
   await browser.close();
   console.log('✅ Captured all frames. Converting to GIF...');
 
+  // Stream frames into FFmpeg
   return new Promise((resolve, reject) => {
     const inputStream = new PassThrough();
-
     const ffmpegProc = ffmpeg(inputStream)
       .inputFormat('image2pipe')
       .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
-      .format('gif')
-      .on('error', (err) => {
-        console.error('❌ FFmpeg error:', err.message);
-        reject(err);
-      });
+      .format('gif');
 
     const outputChunks = [];
     const outputStream = new PassThrough();
@@ -115,6 +109,10 @@ async function recordGifBuffer(videoUrl) {
       console.log('🎉 GIF created in memory');
       resolve(Buffer.concat(outputChunks));
     });
+    ffmpegProc.on('error', err => {
+      console.error('❌ FFmpeg error:', err.message);
+      reject(err);
+    });
 
     for (const frame of frames) {
       inputStream.write(frame);
@@ -123,6 +121,7 @@ async function recordGifBuffer(videoUrl) {
   });
 }
 
+// --- API Endpoint ---
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
@@ -144,6 +143,7 @@ app.post('/yt-hook', async (req, res) => {
   }
 });
 
+// --- Start Server ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
