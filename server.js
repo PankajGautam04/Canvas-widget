@@ -13,9 +13,9 @@ app.use(express.json());
 
 // ✅ Proxy list
 const proxies = [
+  'http://103.170.22.167:8080',
   'http://185.246.85.105:80',
-  'http://47.252.29.28:11222',
-  'http://103.170.22.167:8080'
+  'http://47.252.29.28:11222'
 ];
 
 // ✅ Random proxy selector
