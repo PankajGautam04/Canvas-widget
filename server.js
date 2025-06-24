@@ -4,7 +4,6 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 const ffmpeg = require('fluent-ffmpeg');
-const os = require('os');
 
 puppeteer.use(StealthPlugin());
 
@@ -18,41 +17,40 @@ function cleanUpFile(filePath) {
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
-// Search YouTube
+// 🧠 Search YouTube using API
 async function searchYouTubeVideo(query) {
+  console.log(`🔍 Searching YouTube for: ${query}`);
   const https = require('https');
-  const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
-    query
-  )}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
+  const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&key=${YOUTUBE_API_KEY}&type=video&maxResults=1`;
 
   return new Promise((resolve, reject) => {
-    https
-      .get(apiUrl, (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            const videoId = json.items?.[0]?.id?.videoId;
-            if (videoId) {
-              resolve(`https://www.youtube.com/watch?v=${videoId}`);
-            } else {
-              reject('No video found');
-            }
-          } catch (err) {
-            reject(err.message);
+    https.get(apiUrl, res => {
+      let data = '';
+      res.on('data', chunk => (data += chunk));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          const videoId = json.items?.[0]?.id?.videoId;
+          if (videoId) {
+            const url = `https://www.youtube.com/watch?v=${videoId}`;
+            console.log(`✅ Found video: ${url}`);
+            resolve(url);
+          } else {
+            reject('No video found');
           }
-        });
-      })
-      .on('error', (err) => reject(err.message));
+        } catch (err) {
+          reject('Failed to parse YouTube response: ' + err.message);
+        }
+      });
+    }).on('error', err => reject('YouTube API error: ' + err.message));
   });
 }
 
-// Record YouTube video as GIF (24 FPS)
+// 🎥 Record and convert to GIF
 async function recordYouTubeToGif(videoUrl) {
   const timestamp = Date.now();
-  const tmpDir = os.tmpdir();
-  const gifPath = path.join(tmpDir, `yt_${timestamp}.gif`);
+  const gifPath = path.join(__dirname, `yt_${timestamp}.gif`);
+  console.log('🚀 Launching browser for:', videoUrl);
 
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH,
@@ -61,63 +59,74 @@ async function recordYouTubeToGif(videoUrl) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--autoplay-policy=no-user-gesture-required',
-      '--window-size=1280,720',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--hide-scrollbars'
+      '--window-size=1280,720'
     ],
     defaultViewport: { width: 1280, height: 720 }
   });
 
   const page = await browser.newPage();
-  await page.goto(videoUrl, { waitUntil: 'domcontentloaded' });
 
-  // Start playback
-  await page.evaluate(() => {
-    const video = document.querySelector('video');
-    if (video) {
-      video.muted = true;
-      video.play();
-    }
-  });
+  console.log('📺 Loading video player...');
+  await page.goto('about:blank');
+  await page.setContent(`
+    <html>
+    <body style="margin:0;overflow:hidden;">
+      <video id="yt" width="1280" height="720" autoplay muted playsinline></video>
+      <script>
+        const url = "${videoUrl}";
+        const video = document.getElementById("yt");
+        video.src = url.replace("watch?v=", "embed/") + "?autoplay=1&mute=1";
+        video.play();
+      </script>
+    </body>
+    </html>
+  `);
 
-  await page.waitForTimeout(3000); // allow video to buffer
-
-  // Capture screenshots for 8 seconds at 24 fps
+  console.log('🎞️ Capturing 192 frames at 24 fps...');
   const frames = [];
-  for (let i = 0; i < 8 * 24; i++) {
+  for (let i = 0; i < 192; i++) { // 8s * 24fps
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     frames.push(buffer);
     await page.waitForTimeout(1000 / 24);
   }
 
   await browser.close();
+  console.log('✅ Captured all frames. Converting to GIF...');
 
-  // Convert frames to GIF using ffmpeg
   return new Promise((resolve, reject) => {
-    const ffmpegCmd = ffmpeg()
-      .input(`pipe:0`)
+    const proc = ffmpeg()
+      .input('pipe:0')
       .inputFormat('image2pipe')
-      .outputOptions('-vf', 'fps=24,scale=320:-1:flags=lanczos')
-      .toFormat('gif')
+      .outputOptions([
+        '-vf', 'fps=24,scale=320:-1:flags=lanczos'
+      ])
+      .format('gif')
       .on('end', () => {
+        console.log('🎉 GIF conversion complete.');
         resolve(gifPath);
       })
-      .on('error', reject)
-      .save(gifPath);
+      .on('error', (err) => {
+        console.error('❌ FFmpeg error:', err.message);
+        reject(err);
+      });
+
+    const writeStream = fs.createWriteStream(gifPath);
+    proc.pipe(writeStream);
 
     for (const frame of frames) {
-      ffmpegCmd.stdin.write(frame);
+      proc.stdin.write(frame);
     }
-    ffmpegCmd.stdin.end();
-  }).then(() => gifPath);
+
+    proc.stdin.end();
+  });
 }
 
-// Main API
+// 🧠 Main API
 app.post('/yt-hook', async (req, res) => {
   const { title, artist } = req.body;
 
   if (!title || !artist) {
+    console.log('❌ Missing title or artist');
     return res.status(400).json({ error: 'Missing title or artist' });
   }
 
@@ -125,19 +134,26 @@ app.post('/yt-hook', async (req, res) => {
     const query = `official music video ${title} ${artist}`;
     const videoUrl = await searchYouTubeVideo(query);
     const gifPath = await recordYouTubeToGif(videoUrl);
-    const base64 = fs.readFileSync(gifPath, { encoding: 'base64' });
-    cleanUpFile(gifPath);
-    res.json({ type: 'gif', base64 });
+
+    res.setHeader('Content-Type', 'image/gif');
+    res.sendFile(gifPath, (err) => {
+      if (!err) {
+        cleanUpFile(gifPath);
+        console.log('🧹 Cleaned up temporary GIF:', gifPath);
+      } else {
+        console.error('❌ Error sending file:', err.message);
+      }
+    });
   } catch (err) {
-    console.error('yt-hook error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('yt-hook error:', err.message || err);
+    res.status(500).json({ error: err.message || err });
   }
 });
 
-// Optional: view generated GIFs
+// 🧪 Debug route to view GIFs
 app.get('/debug', (req, res) => {
   const files = fs.readdirSync(__dirname).filter(f => f.endsWith('.gif'));
-  if (files.length === 0) return res.status(404).send('No debug files found.');
+  if (files.length === 0) return res.status(404).send('No debug GIFs found');
   res.setHeader('Content-Type', 'text/html');
   res.send(`
     <h2>Generated GIFs</h2>
